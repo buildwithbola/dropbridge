@@ -1,0 +1,14 @@
+node_modules
+.next
+out
+desktop-bundle
+dist-desktop
+.tmp-icon-gen
+.env.local
+.env
+*.log
+.DS_Store
+qa-screenshots
+
+.vercel
+.env*

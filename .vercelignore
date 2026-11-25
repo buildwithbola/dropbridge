@@ -1,0 +1,13 @@
+dist-desktop
+desktop-bundle
+electron
+build
+server
+scripts
+.tmp-icon-gen
+.github
+qa-screenshots
+*.exe
+*.dmg
+*.AppImage
+*.deb
