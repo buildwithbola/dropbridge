@@ -39,6 +39,7 @@ interface PlatformCard {
   secondaryFile: string;
   buildCmd: string;
   notes: string;
+  hostedInRelease: boolean;
 }
 
 const PLATFORMS: PlatformCard[] = [
@@ -52,28 +53,31 @@ const PLATFORMS: PlatformCard[] = [
     secondaryFile: "DropBridge-1.2.0-x64-Portable.exe",
     buildCmd: "npm run dist:win",
     notes: "Includes Start Menu & Desktop shortcuts, System Tray mode, and Launch-at-Login.",
+    hostedInRelease: true,
   },
   {
     id: "macos",
     name: "macOS",
     subtitle: "Apple Silicon (M1–M4) & Intel",
-    primaryLabel: "Apple Silicon (.dmg)",
+    primaryLabel: "Build Apple Silicon / Intel (.dmg)",
     primaryFile: "DropBridge-1.2.0-arm64.dmg",
     secondaryLabel: "Intel Mac (.dmg)",
     secondaryFile: "DropBridge-1.2.0-x64.dmg",
     buildCmd: "npm run dist:mac",
     notes: "Lives cleanly in the macOS Menu Bar so your iPhone or Android can drop files anytime.",
+    hostedInRelease: false,
   },
   {
     id: "linux",
     name: "Linux",
     subtitle: "Ubuntu, Debian, Fedora, Arch (x64 & arm64)",
-    primaryLabel: "Universal (.AppImage)",
+    primaryLabel: "Build Universal (.AppImage / .deb)",
     primaryFile: "DropBridge-1.2.0-x64.AppImage",
     secondaryLabel: "Debian / Ubuntu (.deb)",
     secondaryFile: "DropBridge-1.2.0-x64.deb",
     buildCmd: "npm run dist:linux",
     notes: "Self-contained binary with embedded LAN signaling server and desktop tray icon.",
+    hostedInRelease: false,
   },
 ];
 
@@ -138,7 +142,7 @@ export function DownloadClient() {
               </div>
 
               <div className="mt-6 space-y-2.5">
-                {hasHostedReleases ? (
+                {hasHostedReleases && platform.hostedInRelease ? (
                   <>
                     <a
                       href={`${RELEASES_BASE.replace(/\/$/, "")}/${platform.primaryFile}`}
@@ -164,13 +168,15 @@ export function DownloadClient() {
                         : "border border-[var(--db-border-strong)] bg-[var(--db-surface)] text-[var(--db-ink)] hover:border-[#FF5A36]"
                     }`}
                   >
-                    <Download className="h-4 w-4" />
+                    <Terminal className="h-4 w-4" />
                     <span>{platform.primaryLabel}</span>
                   </button>
                 )}
 
                 <p className="text-center font-mono-code text-[10px] text-[var(--db-muted)]">
-                  {platform.primaryFile}
+                  {hasHostedReleases && platform.hostedInRelease
+                    ? `${platform.primaryFile} · Ready to download`
+                    : `${platform.primaryFile} · Build on ${platform.name} / CI`}
                 </p>
               </div>
             </div>
