@@ -260,7 +260,7 @@ function createWindow() {
     return { action: "allow" };
   });
 
-  mainWindow.loadURL(`http://localhost:${activeWebPort}`);
+  mainWindow.loadURL(`http://localhost:${activeWebPort}/bridge`);
 
   // Minimize cleanly to System Tray / Menu Bar when closed so phone drops keep working!
   mainWindow.on("close", (event) => {

@@ -286,7 +286,7 @@ export function DropBridgeApp() {
     const host = isLocalhost && lanIp ? lanIp : originInfo.hostname;
     const portSuffix = originInfo.port ? `:${originInfo.port}` : "";
     const code = snapshot.displayCode || snapshot.roomCode;
-    return `${originInfo.protocol}//${host}${portSuffix}/${code ? `?join=${encodeURIComponent(code)}` : ""}`;
+    return `${originInfo.protocol}//${host}${portSuffix}/bridge${code ? `?join=${encodeURIComponent(code)}` : ""}`;
   }, [isLocalhost, lanIp, originInfo, snapshot.displayCode, snapshot.roomCode]);
 
   const handleFilesSelected = (files: FileList | File[]) => {

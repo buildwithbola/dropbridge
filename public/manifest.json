@@ -2,7 +2,7 @@
   "name": "DropBridge",
   "short_name": "DropBridge",
   "description": "Bridge the gap between screen and pocket. Zero-hassle PC-to-phone file, photo, video, and clipboard transfers.",
-  "start_url": "/",
+  "start_url": "/bridge",
   "display": "standalone",
   "background_color": "#10375C",
   "theme_color": "#10375C",

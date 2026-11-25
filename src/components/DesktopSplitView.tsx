@@ -147,7 +147,9 @@ export function DesktopSplitView({
       <section className="db-sapphire-grid relative flex flex-col justify-between px-8 py-7 xl:px-12 xl:py-9 text-white">
         {/* Top brand bar */}
         <header className="flex items-center justify-between gap-4">
-          <DropBridgeLogo variant="dark-bg" size="md" showTagline />
+          <Link href="/" title="Back to DropBridge Homepage" className="hover:opacity-90 transition-opacity">
+            <DropBridgeLogo variant="dark-bg" size="md" showTagline />
+          </Link>
           <ConnectionBadge
             connectionState={snapshot.connectionState}
             transportMode={snapshot.transportMode}

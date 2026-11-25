@@ -162,7 +162,9 @@ export function MobilePocketView({
       >
         {/* Mobile Header — Strictly fits 375px with generous breathing room */}
         <header className="flex items-center justify-between gap-2">
-          <DropBridgeLogo variant="dark-bg" size="sm" />
+          <Link href="/" title="DropBridge Home" className="shrink-0">
+            <DropBridgeLogo variant="dark-bg" size="sm" />
+          </Link>
           <div className="flex items-center gap-1.5 shrink-0">
             {isConnected && (
               <button

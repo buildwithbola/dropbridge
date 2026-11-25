@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
     .filter((v, idx, arr) => arr.indexOf(v) === idx)
     .join(" — ");
 
-  const target = new URL("/", request.url);
+  const target = new URL("/bridge", request.url);
   if (combined) {
     target.searchParams.set("shared", combined.slice(0, 2000));
   }

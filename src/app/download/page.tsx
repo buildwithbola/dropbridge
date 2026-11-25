@@ -30,11 +30,11 @@ export default function DownloadPage() {
               <span className="hidden sm:inline">Docs</span>
             </Link>
             <Link
-              href="/"
+              href="/bridge"
               className="db-btn-coral inline-flex h-10 items-center gap-1.5 rounded-xl px-3.5 sm:px-4 text-xs font-semibold"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
-              <span>Open Bridge</span>
+              <span>Open App</span>
             </Link>
             <ThemeToggle />
           </div>
