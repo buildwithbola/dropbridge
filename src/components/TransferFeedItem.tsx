@@ -119,12 +119,16 @@ export function TransferFeedItem({
                 {item.direction === "incoming" ? (
                   <>
                     <ArrowDownLeft className="h-3 w-3 text-[#FF5A36]" />
-                    Received {item.isUrl ? "Link" : "Note"}
+                    {item.deliveryMode === "inbox"
+                      ? `Delivered from queue · ${item.isUrl ? "Link" : "Note"}`
+                      : `Received ${item.isUrl ? "Link" : "Note"}`}
                   </>
                 ) : (
                   <>
                     <ArrowUpRight className="h-3 w-3 text-emerald-600" />
-                    Sent {item.isUrl ? "Link" : "Note"}
+                    {item.deliveryMode === "queued"
+                      ? "Queued for delivery · Encrypted"
+                      : `Sent ${item.isUrl ? "Link" : "Note"}`}
                   </>
                 )}
               </span>
@@ -241,7 +245,15 @@ export function TransferFeedItem({
               {isDone && (
                 <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium">
                   <ShieldCheck className="h-3.5 w-3.5" />
-                  {item.verified ? "Verified lossless" : "Completed"}
+                  {item.deliveryMode === "queued"
+                    ? "Queued for delivery · Encrypted"
+                    : item.deliveryMode === "inbox"
+                    ? item.verified
+                      ? "Delivered from queue · Verified lossless"
+                      : "Delivered from queue"
+                    : item.verified
+                    ? "Verified lossless"
+                    : "Completed"}
                   {item.speedBps > 0 && (
                     <span className="font-mono-code text-[var(--db-muted)] font-normal">
                       · {formatSpeed(item.speedBps)}

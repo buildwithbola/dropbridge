@@ -216,7 +216,14 @@ export default function DocsPage() {
                   badge: "Encrypted Relay",
                   icon: Radio,
                   accent: "text-[#FF5A36] bg-[#FF5A36]/12",
-                  desc: "Behind strict corporate firewalls or hotel AP isolation, DropBridge seamlessly falls back after 5.5 seconds to an encrypted real-time relay stream so your transfer still succeeds.",
+                  desc: "Behind strict corporate firewalls or hotel AP isolation, DropBridge falls back to an encrypted relay stream—and promotes live back to Direct LAN the instant P2P opens.",
+                },
+                {
+                  tier: "Always Linked",
+                  badge: "Permanent Pair + Offline PC Drop",
+                  icon: Zap,
+                  accent: "text-[#FF5A36] bg-[#FF5A36]/12",
+                  desc: "Once your phone and PC pair, they stay permanently bonded. When your PC is away or shut down, files and links from your phone are encrypted on-device with your shared pair key, queued securely, and auto-delivered when you open DropBridge on your PC.",
                 },
               ].map((t) => {
                 const Icon = t.icon;

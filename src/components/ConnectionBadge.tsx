@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { ShieldCheck, Wifi, Radio, Loader2, Unplug } from "lucide-react";
+import { CloudUpload, Loader2, Radio, ShieldCheck, Unplug, Wifi } from "lucide-react";
 import type { ConnectionState, TransportMode } from "@/lib/types";
 
 interface ConnectionBadgeProps {
@@ -18,11 +18,14 @@ export function ConnectionBadge({
   onDarkSurface = false,
 }: ConnectionBadgeProps) {
   if (connectionState === "connected") {
+    const isStandby = transportMode === "standby-inbox";
     const meta =
       transportMode === "lan-direct"
         ? { label: "Direct LAN · Fast", icon: Wifi, dot: "bg-emerald-400" }
         : transportMode === "p2p-direct"
         ? { label: "Direct P2P · E2EE", icon: ShieldCheck, dot: "bg-emerald-400" }
+        : transportMode === "standby-inbox"
+        ? { label: "Paired · Send Anytime", icon: CloudUpload, dot: "bg-sky-400" }
         : { label: "Encrypted Relay", icon: Radio, dot: "bg-[#FF5A36]" };
 
     const Icon = meta.icon;
@@ -30,7 +33,11 @@ export function ConnectionBadge({
     return (
       <div
         className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium border ${
-          onDarkSurface
+          isStandby
+            ? onDarkSurface
+              ? "border-sky-400/35 bg-sky-400/14 text-sky-100"
+              : "border-sky-600/25 bg-sky-500/10 text-sky-800 dark:text-sky-200"
+            : onDarkSurface
             ? "border-emerald-400/30 bg-emerald-400/12 text-emerald-100"
             : "border-emerald-600/20 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200"
         }`}
@@ -45,7 +52,11 @@ export function ConnectionBadge({
     );
   }
 
-  if (connectionState === "handshaking" || connectionState === "joining" || connectionState === "reconnecting") {
+  if (
+    connectionState === "handshaking" ||
+    connectionState === "joining" ||
+    connectionState === "reconnecting"
+  ) {
     return (
       <div
         className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium border ${

@@ -12,6 +12,7 @@ export type TransportMode =
   | "lan-direct"
   | "p2p-direct"
   | "encrypted-relay"
+  | "standby-inbox"
   | "disconnected";
 
 export type ConnectionState =
@@ -34,6 +35,8 @@ export type TransferStatus =
 
 export type PreviewType = "image" | "video" | "audio" | "pdf" | "other";
 
+export type DeliveryMode = "live" | "queued" | "inbox";
+
 export interface FileTransferItem {
   kind: "file";
   id: string;
@@ -51,6 +54,7 @@ export interface FileTransferItem {
   blob?: Blob;
   previewType: PreviewType;
   verified?: boolean;
+  deliveryMode?: DeliveryMode;
   error?: string;
 }
 
@@ -61,6 +65,7 @@ export interface ClipboardItem {
   isUrl: boolean;
   direction: TransferDirection;
   createdAt: number;
+  deliveryMode?: DeliveryMode;
 }
 
 export type BridgeItem = FileTransferItem | ClipboardItem;
@@ -71,6 +76,8 @@ export interface TrustedDevice {
   kind: DeviceKind;
   os: string;
   roomCode: string;
+  pairId: string;
+  pairSecret: string;
   lastPairedAt: number;
 }
 

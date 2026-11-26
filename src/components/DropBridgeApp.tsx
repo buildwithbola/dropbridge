@@ -13,7 +13,6 @@ import {
 import {
   forgetTrustedDevice,
   getAutoRejoinEnabled,
-  getLastPersistentRoomCode,
   loadTrustedDevices,
   setAutoRejoinEnabled,
 } from "@/lib/trustedDevices";
@@ -164,9 +163,23 @@ export function DropBridgeApp() {
       }
     });
 
-    const shouldAutoRejoin = getAutoRejoinEnabled();
-    const lastRoom = shouldAutoRejoin ? getLastPersistentRoomCode() : null;
-    engine.start(joinParam, lastRoom);
+    let urlPairSecret: string | null = null;
+    if (typeof window !== "undefined" && window.location.hash) {
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      const rawK = hashParams.get("k");
+      if (rawK && rawK.length >= 16) {
+        urlPairSecret = rawK;
+      }
+      if (rawK) {
+        window.history.replaceState(
+          null,
+          "",
+          `${window.location.pathname}${window.location.search}`
+        );
+      }
+    }
+
+    engine.start(joinParam, urlPairSecret);
 
     return () => {
       engine.onIncomingFileComplete(null);
@@ -272,7 +285,10 @@ export function DropBridgeApp() {
     const host = isLocalhost && lanIp ? lanIp : originInfo.hostname;
     const portSuffix = originInfo.port ? `:${originInfo.port}` : "";
     const code = snapshot.displayCode || snapshot.roomCode;
-    return `${originInfo.protocol}//${host}${portSuffix}/bridge${code ? `?join=${encodeURIComponent(code)}` : ""}`;
+    const secret = engineRef.current?.getHostPairSecret();
+    const query = code ? `?join=${encodeURIComponent(code)}` : "";
+    const hash = code && secret ? `#k=${encodeURIComponent(secret)}` : "";
+    return `${originInfo.protocol}//${host}${portSuffix}/bridge${query}${hash}`;
   }, [isLocalhost, lanIp, originInfo, snapshot.displayCode, snapshot.roomCode]);
 
   const handleFilesSelected = (files: FileList | File[]) => {

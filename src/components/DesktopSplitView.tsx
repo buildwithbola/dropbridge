@@ -247,12 +247,16 @@ export function DesktopSplitView({
             <div className="min-w-0">
               <h1 className="truncate font-display text-lg font-bold tracking-tight text-[var(--db-ink)]">
                 {isConnected
-                  ? `Bridged with ${snapshot.remotePeer?.name || "Mobile Device"}`
+                  ? snapshot.transportMode === "standby-inbox"
+                    ? `Paired with ${snapshot.remotePeer?.name || "Mobile Device"}`
+                    : `Bridged with ${snapshot.remotePeer?.name || "Mobile Device"}`
                   : "Pair your phone in 3 seconds"}
               </h1>
               <p className="text-xs text-[var(--db-muted)]">
                 {isConnected
-                  ? "Drag files, press Ctrl+V, or send links from either device."
+                  ? snapshot.transportMode === "standby-inbox"
+                    ? "Permanently paired — drop files or links anytime; they land automatically when online."
+                    : "Drag files, press Ctrl+V, or send links from either device."
                   : "Works on Android & iOS — over Wi-Fi, hotspot, or 5G."}
               </p>
             </div>

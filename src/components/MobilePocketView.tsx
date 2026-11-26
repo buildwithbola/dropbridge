@@ -207,20 +207,40 @@ export function MobilePocketView({
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2">
                   <h1 className="font-display text-sm font-extrabold tracking-tight text-white leading-tight">
-                    {activeTransfer ? "Transferring…" : "Transfer Ready"}
+                    {activeTransfer
+                      ? "Transferring…"
+                      : snapshot.transportMode === "standby-inbox"
+                      ? "Paired · Send Anytime"
+                      : "Transfer Ready"}
                   </h1>
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-400/30 bg-emerald-400/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-100">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span
+                    className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                      snapshot.transportMode === "standby-inbox"
+                        ? "border-sky-400/35 bg-sky-400/18 text-sky-100"
+                        : "border-emerald-400/30 bg-emerald-400/15 text-emerald-100"
+                    }`}
+                  >
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full animate-pulse ${
+                        snapshot.transportMode === "standby-inbox"
+                          ? "bg-sky-400"
+                          : "bg-emerald-400"
+                      }`}
+                    />
                     {snapshot.transportMode === "lan-direct"
                       ? "Direct LAN"
                       : snapshot.transportMode === "p2p-direct"
                       ? "Direct P2P"
+                      : snapshot.transportMode === "standby-inbox"
+                      ? "Offline Drop"
                       : "Relay E2EE"}
                   </span>
                 </div>
                 <p className="mt-0.5 truncate text-[11px] text-white/75">
                   {activeTransfer
                     ? `${activeTransfer.name} · ${formatSpeed(activeTransfer.speedBps)}`
+                    : snapshot.transportMode === "standby-inbox"
+                    ? `${snapshot.remotePeer?.name || "Laptop"} is away · Encrypted queue delivers when opened`
                     : `Connected to ${snapshot.remotePeer?.name || "Laptop"} · Lossless`}
                 </p>
               </div>
@@ -350,6 +370,18 @@ export function MobilePocketView({
                   <Clock className="h-3.5 w-3.5" />
                   <span>History ({historyEntries.length})</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileTab("pair")}
+                  className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold transition-all cursor-pointer ${
+                    mobileTab === "pair"
+                      ? "bg-[#10375C] text-white shadow-xs dark:bg-[#FF5A36]"
+                      : "text-[var(--db-muted)] hover:text-[var(--db-ink)]"
+                  }`}
+                >
+                  <QrCode className="h-3.5 w-3.5" />
+                  <span>Pair</span>
+                </button>
               </>
             ) : (
               <>
@@ -455,8 +487,8 @@ export function MobilePocketView({
           />
         )}
 
-        {/* TAB 3: PAIR DEVICE (when Unpaired) */}
-        {mobileTab === "pair" && !isConnected && (
+        {/* TAB 3: PAIR DEVICE (when Unpaired or inspecting Code) */}
+        {mobileTab === "pair" && (
           <div className="space-y-3.5">
             <TrustedDevicesBar
               devices={trustedDevices}

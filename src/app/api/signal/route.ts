@@ -1,65 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  notifyRoomWaiters,
+  sharedMemRooms,
+  sharedRoomLocks,
+  waitForRoomActivity,
+  type PeerDevicePayload,
+  type StoredSignalPeer,
+  type StoredSignalRoom,
+} from "@/lib/signalBus";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export const preferredRegion = "iad1";
+export const preferredRegion = "fra1";
 
-interface PeerDevice {
-  id: string;
-  name: string;
-  kind: "desktop" | "mobile" | "tablet";
-  os: string;
-}
-
-interface StoredPeer {
-  peerId: string;
-  device: PeerDevice;
-  queue: Record<string, unknown>[];
-  lastSeen: number;
-}
-
-interface StoredRoom {
-  code: string;
-  displayCode: string;
-  peers: Record<string, StoredPeer>;
-  createdAt: number;
-  lastActivity: number;
-}
-
-const ROOM_TTL_MS = 20 * 60 * 1000;
+const ROOM_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const PEER_STALE_MS = 45_000;
+const PEER_ONLINE_WINDOW_MS = 15_000;
 const ALPHA = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-const globalStore = globalThis as unknown as {
-  __DROPBRIDGE_ROOMS__?: Map<string, StoredRoom>;
-  __DROPBRIDGE_LOCKS__?: Map<string, Promise<unknown>>;
-};
-
-const memRooms: Map<string, StoredRoom> =
-  globalStore.__DROPBRIDGE_ROOMS__ || (globalStore.__DROPBRIDGE_ROOMS__ = new Map());
-
-const roomLocks: Map<string, Promise<unknown>> =
-  globalStore.__DROPBRIDGE_LOCKS__ || (globalStore.__DROPBRIDGE_LOCKS__ = new Map());
 
 /**
  * Serialize all read-modify-write operations per room code so concurrent
  * HTTP polling/signaling requests never race or overwrite peer queues.
  */
 async function withRoomLock<T>(roomKey: string, fn: () => Promise<T>): Promise<T> {
-  const prev = roomLocks.get(roomKey) || Promise.resolve();
+  const prev = sharedRoomLocks.get(roomKey) || Promise.resolve();
   let release!: () => void;
   const current = new Promise<void>((resolve) => {
     release = resolve;
   });
   const chained = prev.then(() => current);
-  roomLocks.set(roomKey, chained);
+  sharedRoomLocks.set(roomKey, chained);
 
   await prev;
   try {
     return await fn();
   } finally {
     release();
-    if (roomLocks.get(roomKey) === chained) {
-      roomLocks.delete(roomKey);
+    if (sharedRoomLocks.get(roomKey) === chained) {
+      sharedRoomLocks.delete(roomKey);
     }
   }
 }
@@ -91,7 +69,7 @@ function getRedisConfig(): { url: string; token: string } | null {
   return null;
 }
 
-async function readRoom(code: string): Promise<StoredRoom | null> {
+async function readRoom(code: string): Promise<StoredSignalRoom | null> {
   const redis = getRedisConfig();
   if (redis) {
     try {
@@ -101,22 +79,22 @@ async function readRoom(code: string): Promise<StoredRoom | null> {
       });
       if (res.ok) {
         const data = await res.json();
-        if (data?.result) return JSON.parse(data.result) as StoredRoom;
+        if (data?.result) return JSON.parse(data.result) as StoredSignalRoom;
         return null;
       }
     } catch {
       // fallback to memory
     }
   }
-  const room = memRooms.get(code) || null;
+  const room = sharedMemRooms.get(code) || null;
   if (room && Date.now() - room.lastActivity > ROOM_TTL_MS) {
-    memRooms.delete(code);
+    sharedMemRooms.delete(code);
     return null;
   }
   return room;
 }
 
-async function writeRoom(room: StoredRoom): Promise<void> {
+async function writeRoom(room: StoredSignalRoom): Promise<void> {
   room.lastActivity = Date.now();
   const redis = getRedisConfig();
   if (redis) {
@@ -129,7 +107,7 @@ async function writeRoom(room: StoredRoom): Promise<void> {
         },
         body: JSON.stringify(room),
       });
-      await fetch(`${redis.url}/expire/${encodeURIComponent(`db:room:${room.code}`)}/1200`, {
+      await fetch(`${redis.url}/expire/${encodeURIComponent(`db:room:${room.code}`)}/86400`, {
         method: "POST",
         headers: { Authorization: `Bearer ${redis.token}` },
       });
@@ -138,37 +116,77 @@ async function writeRoom(room: StoredRoom): Promise<void> {
       // fallback to memory
     }
   }
-  memRooms.set(room.code, room);
+  sharedMemRooms.set(room.code, room);
 }
 
-function getOtherPeer(room: StoredRoom, excludePeerId: string): StoredPeer | null {
+function getOtherPeer(room: StoredSignalRoom, excludePeerId: string): StoredSignalPeer | null {
   for (const peer of Object.values(room.peers)) {
     if (peer.peerId !== excludePeerId) return peer;
   }
   return null;
 }
 
+function isPeerOnline(peer: StoredSignalPeer | null): boolean {
+  return Boolean(peer && Date.now() - peer.lastSeen < PEER_ONLINE_WINDOW_MS);
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const code = normalizeCode(searchParams.get("room") || "");
   const peerId = searchParams.get("peerId") || "";
+  const shouldWait = searchParams.get("wait") === "1";
 
   if (!code || !peerId) {
     return NextResponse.json({ ok: true, mode: "vercel-http-signal", messages: [] });
   }
 
-  return withRoomLock(code, async () => {
+  const firstPass = await withRoomLock(code, async () => {
     const room = await readRoom(code);
     if (!room || !room.peers[peerId]) {
-      return NextResponse.json({ ok: true, messages: [] });
+      return { missing: true as const, messages: [] as Record<string, unknown>[], peerOnline: false };
     }
 
     const peer = room.peers[peerId];
     peer.lastSeen = Date.now();
+    const other = getOtherPeer(room, peerId);
     const messages = peer.queue.splice(0, peer.queue.length);
     await writeRoom(room);
 
-    return NextResponse.json({ ok: true, messages });
+    return { missing: false as const, messages, peerOnline: isPeerOnline(other) };
+  });
+
+  if (firstPass.missing) {
+    return NextResponse.json({ ok: true, reannounce: true, messages: [], peerOnline: false });
+  }
+
+  if (firstPass.messages.length > 0 || !shouldWait) {
+    return NextResponse.json({
+      ok: true,
+      messages: firstPass.messages,
+      peerOnline: firstPass.peerOnline,
+    });
+  }
+
+  // Long-poll wait up to 3.5s (returns immediately on notifyRoomWaiters!)
+  await waitForRoomActivity(code, 3500);
+
+  return withRoomLock(code, async () => {
+    const room = await readRoom(code);
+    if (!room || !room.peers[peerId]) {
+      return NextResponse.json({ ok: true, reannounce: true, messages: [], peerOnline: false });
+    }
+
+    const peer = room.peers[peerId];
+    peer.lastSeen = Date.now();
+    const other = getOtherPeer(room, peerId);
+    const messages = peer.queue.splice(0, peer.queue.length);
+    await writeRoom(room);
+
+    return NextResponse.json({
+      ok: true,
+      messages,
+      peerOnline: isPeerOnline(other),
+    });
   });
 }
 
@@ -183,7 +201,7 @@ export async function POST(request: NextRequest) {
   const action = String(body.action || "");
 
   if (action === "create-room") {
-    const device = (body.device as PeerDevice) || {
+    const device = (body.device as PeerDevicePayload) || {
       id: `d_${Math.random().toString(36).slice(2, 8)}`,
       name: "Laptop",
       kind: "desktop",
@@ -191,7 +209,7 @@ export async function POST(request: NextRequest) {
     };
     const peerId = String(body.peerId || `p_${Math.random().toString(36).slice(2, 10)}`);
     const preferred = normalizeCode(String(body.preferredCode || ""));
-    const initialCode = preferred.length >= 6 ? preferred : generateRoomCode();
+    const initialCode = preferred.length >= 4 ? preferred : generateRoomCode();
 
     return withRoomLock(initialCode, async () => {
       let code = initialCode;
@@ -199,7 +217,7 @@ export async function POST(request: NextRequest) {
 
       if (room) {
         for (const [pid, entry] of Object.entries(room.peers)) {
-          if (entry.device?.id === device.id || Date.now() - entry.lastSeen > 60_000) {
+          if (entry.device?.id === device.id || Date.now() - entry.lastSeen > PEER_STALE_MS) {
             delete room.peers[pid];
           }
         }
@@ -244,12 +262,16 @@ export async function POST(request: NextRequest) {
       }
 
       await writeRoom(room);
+      if (waiting) {
+        notifyRoomWaiters(room.code);
+      }
 
       return NextResponse.json({
         type: "room-created",
         code: room.code,
         displayCode: room.displayCode,
         peerId,
+        peerOnline: isPeerOnline(waiting),
         messages: immediateMessages,
       });
     });
@@ -271,11 +293,11 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
           type: "error",
           code: "ROOM_NOT_FOUND",
-          message: "Bridge code not found. Make sure DropBridge is open on your laptop.",
+          message: "Bridge code not found. Make sure DropBridge is open on your other device.",
         });
       }
 
-      const device = (body.device as PeerDevice) || {
+      const device = (body.device as PeerDevicePayload) || {
         id: `d_${Math.random().toString(36).slice(2, 8)}`,
         name: "Mobile Device",
         kind: "mobile",
@@ -284,7 +306,7 @@ export async function POST(request: NextRequest) {
       const peerId = String(body.peerId || `p_${Math.random().toString(36).slice(2, 10)}`);
 
       for (const [pid, entry] of Object.entries(room.peers)) {
-        if (entry.device?.id === device.id || Date.now() - entry.lastSeen > 60_000) {
+        if (entry.device?.id === device.id || Date.now() - entry.lastSeen > PEER_STALE_MS) {
           delete room.peers[pid];
         }
       }
@@ -315,6 +337,9 @@ export async function POST(request: NextRequest) {
       }
 
       await writeRoom(room);
+      if (host) {
+        notifyRoomWaiters(room.code);
+      }
 
       return NextResponse.json({
         type: "room-joined",
@@ -322,6 +347,7 @@ export async function POST(request: NextRequest) {
         displayCode: room.displayCode,
         peerId,
         peer: host ? { peerId: host.peerId, device: host.device } : null,
+        peerOnline: isPeerOnline(host),
         role: "responder",
       });
     });
@@ -336,7 +362,27 @@ export async function POST(request: NextRequest) {
   return withRoomLock(code, async () => {
     const room = await readRoom(code);
     if (!room) {
-      return NextResponse.json({ ok: false });
+      return NextResponse.json({ ok: false, reannounce: true });
+    }
+
+    if (action === "leave-room" || action === "peer-away") {
+      const leaving = room.peers[peerId];
+      if (leaving) {
+        delete room.peers[peerId];
+      }
+      const other = getOtherPeer(room, peerId);
+      if (other) {
+        other.queue.push({
+          type: "peer-left",
+          peerId,
+          device: leaving?.device || null,
+        });
+        await writeRoom(room);
+        notifyRoomWaiters(code);
+      } else {
+        await writeRoom(room);
+      }
+      return NextResponse.json({ ok: true, messages: [] });
     }
 
     if (room.peers[peerId]) {
@@ -351,26 +397,26 @@ export async function POST(request: NextRequest) {
           from: peerId,
           payload: body.payload,
         });
-        await writeRoom(room);
       }
-      return NextResponse.json({ ok: true });
-    }
-
-    if (action === "leave-room") {
-      const leaving = room.peers[peerId];
-      delete room.peers[peerId];
-      const other = getOtherPeer(room, peerId);
-      if (other && leaving) {
-        other.queue.push({
-          type: "peer-left",
-          peerId,
-          device: leaving.device,
-        });
-      }
+      const ownMessages = room.peers[peerId]?.queue.splice(0) || [];
       await writeRoom(room);
-      return NextResponse.json({ ok: true });
+      if (other) {
+        notifyRoomWaiters(code);
+      }
+      return NextResponse.json({
+        ok: true,
+        peerOnline: isPeerOnline(other),
+        messages: ownMessages,
+      });
     }
 
-    return NextResponse.json({ ok: false }, { status: 400 });
+    const ownMessages = room.peers[peerId]?.queue.splice(0) || [];
+    const other = getOtherPeer(room, peerId);
+    await writeRoom(room);
+    return NextResponse.json({
+      ok: true,
+      peerOnline: isPeerOnline(other),
+      messages: ownMessages,
+    });
   });
 }
