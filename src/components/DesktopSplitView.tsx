@@ -263,10 +263,10 @@ export function DesktopSplitView({
                   type="button"
                   onClick={onInstallPwa}
                   className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-[#FF5A36]/40 bg-[#FF5A36]/10 px-3 text-xs font-semibold text-[#FF5A36] hover:bg-[#FF5A36] hover:text-white transition-colors cursor-pointer"
-                  title="Install DropBridge as desktop app"
+                  title="Install DropBridge as a standalone PWA app"
                 >
                   <Download className="h-3.5 w-3.5" />
-                  <span>Install</span>
+                  <span>Install App</span>
                 </button>
               )}
               {isConnected && (
@@ -280,14 +280,6 @@ export function DesktopSplitView({
                   <span>Unlink</span>
                 </button>
               )}
-              <Link
-                href="/download"
-                className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-[var(--db-border)] bg-[var(--db-card)] px-3 text-xs font-semibold text-[var(--db-slate)] hover:border-[var(--db-border-strong)] transition-colors"
-                title="Download DropBridge desktop app for Windows, macOS & Linux"
-              >
-                <Download className="h-3.5 w-3.5 text-[#FF5A36]" />
-                <span>App</span>
-              </Link>
               <Link
                 href="/docs"
                 className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-[var(--db-border)] bg-[var(--db-card)] px-3 text-xs font-semibold text-[var(--db-slate)] hover:border-[var(--db-border-strong)] transition-colors"
@@ -498,14 +490,11 @@ export function DesktopSplitView({
               : "Connecting to signaling server…"}
           </span>
           <div className="flex items-center gap-3">
-            <Link href="/download" className="hover:text-[#FF5A36] transition-colors font-medium">
-              Desktop App
-            </Link>
             <Link href="/docs" className="hover:text-[#FF5A36] transition-colors font-medium">
               Documentation
             </Link>
             <span className="font-mono-code">
-              {snapshot.wakeLockActive ? "Wake Lock Active" : "v1.2 · WebRTC + Relay"}
+              {snapshot.wakeLockActive ? "Wake Lock Active" : "v1.3 · Pure PWA + WebRTC"}
             </span>
           </div>
         </footer>

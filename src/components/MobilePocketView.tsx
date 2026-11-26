@@ -38,6 +38,7 @@ interface MobilePocketViewProps {
   historyEntries: HistoryEntry[];
   autoRejoin: boolean;
   canInstallPwa: boolean;
+  autoSavedIds: Set<string>;
   onFilesSelected: (files: FileList | File[]) => void;
   onSendText: (text: string) => void;
   onJoinCode: (code: string) => void;
@@ -62,6 +63,7 @@ export function MobilePocketView({
   historyEntries,
   autoRejoin,
   canInstallPwa,
+  autoSavedIds,
   onFilesSelected,
   onSendText,
   onJoinCode,
@@ -432,6 +434,7 @@ export function MobilePocketView({
                   <TransferFeedItem
                     key={item.id}
                     item={item}
+                    autoSaved={autoSavedIds.has(item.id)}
                     onCancel={onCancelTransfer}
                     onRemove={onRemoveItem}
                     onPreview={onPreviewFile}
@@ -491,11 +494,8 @@ export function MobilePocketView({
                 <span>Install App</span>
               </button>
             )}
-            <Link href="/download" className="font-semibold hover:text-[#FF5A36] transition-colors">
-              Desktop
-            </Link>
             <Link href="/docs" className="font-semibold hover:text-[#FF5A36] transition-colors">
-              Docs
+              Docs &amp; Help
             </Link>
           </div>
         </footer>

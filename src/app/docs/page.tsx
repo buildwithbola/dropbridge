@@ -62,12 +62,6 @@ export default function DocsPage() {
 
           <div className="flex items-center gap-2 shrink-0">
             <Link
-              href="/download"
-              className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-[var(--db-border)] bg-[var(--db-surface)] px-3 text-xs font-semibold text-[var(--db-slate)] hover:border-[var(--db-border-strong)] transition-colors"
-            >
-              <span>Download App</span>
-            </Link>
-            <Link
               href="/bridge"
               className="db-btn-coral inline-flex h-10 items-center gap-1.5 rounded-xl px-3.5 sm:px-4 text-xs font-semibold"
             >
@@ -338,8 +332,8 @@ export default function DocsPage() {
                 },
                 {
                   icon: Smartphone,
-                  title: "Installable PWA + Android Share Sheet",
-                  body: "Tap 'Install App' on Android Chrome to pin DropBridge to your home screen and share links directly from Chrome, YouTube, or X via Android's native Share menu.",
+                  title: "Pure Cross-Platform PWA Install",
+                  body: "Install DropBridge directly from Chrome, Edge, or Safari onto Windows, macOS, Linux, Android (with native Share Sheet), and iPhone—zero 170 MB bloat.",
                 },
                 {
                   icon: Zap,

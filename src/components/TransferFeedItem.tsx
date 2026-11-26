@@ -242,6 +242,11 @@ export function TransferFeedItem({
                 <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium">
                   <ShieldCheck className="h-3.5 w-3.5" />
                   {item.verified ? "Verified lossless" : "Completed"}
+                  {item.speedBps > 0 && (
+                    <span className="font-mono-code text-[var(--db-muted)] font-normal">
+                      · {formatSpeed(item.speedBps)}
+                    </span>
+                  )}
                 </span>
               )}
               {autoSaved && (

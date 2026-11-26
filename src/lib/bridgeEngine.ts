@@ -17,10 +17,12 @@ import {
   updateCrc32,
 } from "./utils";
 
-const CHUNK_SIZE = 64 * 1024; // 64KB — optimal across iOS Safari, Android Chrome & Windows Chrome
-const BUFFER_HIGH_WATER = 1024 * 1024; // 1MB
-const BUFFER_LOW_WATER = 256 * 1024; // 256KB
-const WEBRTC_FALLBACK_TIMEOUT_MS = 5500;
+const SAFE_CHUNK_SIZE = 64 * 1024; // 64KB fallback for Relay & older Safari SCTP
+const FAST_CHUNK_SIZE = 128 * 1024; // 128KB for modern Direct LAN WebRTC SCTP
+const READ_WINDOW_SIZE = 2 * 1024 * 1024; // 2MB windowed reader to saturate Wi-Fi
+const BUFFER_HIGH_WATER = 4 * 1024 * 1024; // 4MB
+const BUFFER_LOW_WATER = 1024 * 1024; // 1MB
+const WEBRTC_FALLBACK_TIMEOUT_MS = 10_000;
 
 type Listener = (snapshot: BridgeSnapshot) => void;
 
@@ -29,9 +31,8 @@ interface IncomingBuffer {
   name: string;
   size: number;
   mimeType: string;
-  chunks: Uint8Array[];
+  chunksBySeq: Map<number, Uint8Array>;
   bytesReceived: number;
-  crc: number;
   startedAt: number;
   lastUiTick: number;
 }
@@ -40,6 +41,8 @@ interface OutgoingJob {
   itemId: string;
   file: File;
   offset: number;
+  seq: number;
+  crc: number;
   cancelled: boolean;
 }
 
@@ -147,10 +150,15 @@ export class DropBridgeEngine {
   private signalingMode: "ws" | "http" = "ws";
   private httpPeerId = `p_${Math.random().toString(36).slice(2, 10)}`;
   private httpPollTimer: ReturnType<typeof setTimeout> | null = null;
+  private httpSendChain: Promise<void> = Promise.resolve();
   private wsFailCount = 0;
+
+  private pendingIceCandidates: RTCIceCandidateInit[] = [];
+  private trustedReconnectTargetCode: string | null = null;
 
   private useRelayFallback = false;
   private fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  private tierRecheckTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingIntent: { action: "create" | "join"; code?: string } | null = null;
 
@@ -224,6 +232,11 @@ export class DropBridgeEngine {
     this.clearTimers();
     this.closePeerConnection();
     this.releaseWakeLock();
+    for (const item of this.state.items) {
+      if (item.kind === "file" && item.blobUrl) {
+        URL.revokeObjectURL(item.blobUrl);
+      }
+    }
     if (this.ws) {
       try {
         this.ws.close();
@@ -259,6 +272,7 @@ export class DropBridgeEngine {
   public createNewRoom(preferredCode?: string): void {
     this.closePeerConnection();
     this.useRelayFallback = false;
+    this.trustedReconnectTargetCode = null;
     this.pendingIntent = { action: "create", code: preferredCode };
     this.emit({
       remotePeer: null,
@@ -305,6 +319,18 @@ export class DropBridgeEngine {
     } else {
       this.connectWebSocketSignaling();
     }
+  }
+
+  /**
+   * Reconnect to a previously paired trusted room: attempt to join first so if
+   * the peer is already hosting we link immediately, and auto-create if nobody
+   * is waiting yet.
+   */
+  public reconnectTrustedRoom(code: string): void {
+    const clean = normalizeCode(code);
+    if (clean.length < 4) return;
+    this.trustedReconnectTargetCode = clean;
+    this.joinRoom(clean);
   }
 
   public disconnectBridge(): void {
@@ -382,6 +408,8 @@ export class DropBridgeEngine {
         itemId: id,
         file,
         offset: 0,
+        seq: 0,
+        crc: 0,
         cancelled: false,
       });
     }
@@ -405,6 +433,10 @@ export class DropBridgeEngine {
       clearTimeout(this.fallbackTimer);
       this.fallbackTimer = null;
     }
+    if (this.tierRecheckTimer) {
+      clearTimeout(this.tierRecheckTimer);
+      this.tierRecheckTimer = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -416,6 +448,23 @@ export class DropBridgeEngine {
   }
 
   // ---------------- HTTP SIGNALING (Native Vercel Serverless) ----------------
+
+  private enqueueHttpPost(body: Record<string, unknown>): Promise<void> {
+    const task = this.httpSendChain.then(async () => {
+      if (this.destroyed) return;
+      try {
+        await fetch("/api/signal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch {
+        // transient network error; relay or retry handles recovery
+      }
+    });
+    this.httpSendChain = task.catch(() => {});
+    return task;
+  }
 
   private async startHttpSignaling(): Promise<void> {
     if (this.destroyed) return;
@@ -466,7 +515,7 @@ export class DropBridgeEngine {
         signalingConnected: false,
         errorMessage: "Reconnecting to DropBridge signaling…",
       });
-      this.reconnectTimer = setTimeout(() => this.startHttpSignaling(), 2500);
+      this.reconnectTimer = setTimeout(() => this.startHttpSignaling(), 2000);
     }
   }
 
@@ -475,7 +524,17 @@ export class DropBridgeEngine {
     if (this.httpPollTimer) clearTimeout(this.httpPollTimer);
 
     const isDirectOpen = Boolean(this.dc && this.dc.readyState === "open");
-    const delayMs = this.useRelayFallback ? 260 : isDirectOpen ? 3500 : 650;
+    const isNegotiating =
+      this.state.connectionState === "handshaking" ||
+      this.state.connectionState === "joining";
+
+    const delayMs = this.useRelayFallback
+      ? 240
+      : isNegotiating
+      ? 250
+      : isDirectOpen
+      ? 3500
+      : 650;
 
     this.httpPollTimer = setTimeout(async () => {
       if (this.destroyed || this.signalingMode !== "http") return;
@@ -506,7 +565,7 @@ export class DropBridgeEngine {
     }, delayMs);
   }
 
-  // ---------------- WEBSOCKET SIGNALING (Local LAN / Desktop / Custom WS) ----------------
+  // ---------------- WEBSOCKET SIGNALING (Local LAN / Custom WS) ----------------
 
   private connectWebSocketSignaling(): void {
     if (this.destroyed) return;
@@ -574,7 +633,6 @@ export class DropBridgeEngine {
         }
 
         this.wsFailCount++;
-        // If local WS isn't running, seamlessly fall back to built-in /api/signal!
         if (this.wsFailCount >= 2 && !process.env.NEXT_PUBLIC_SIGNALING_URL) {
           this.signalingMode = "http";
           this.startHttpSignaling();
@@ -599,16 +657,12 @@ export class DropBridgeEngine {
   private sendSignal(payload: Record<string, unknown>): void {
     if (this.signalingMode === "http") {
       const action = String(payload.type || "");
-      fetch("/api/signal", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action,
-          room: this.state.roomCode,
-          peerId: this.httpPeerId,
-          payload: payload.payload,
-        }),
-      }).catch(() => {});
+      void this.enqueueHttpPost({
+        action,
+        room: this.state.roomCode,
+        peerId: this.httpPeerId,
+        payload: payload.payload,
+      });
       return;
     }
 
@@ -636,6 +690,7 @@ export class DropBridgeEngine {
         const code = String(msg.code || "");
         const displayCode = String(msg.displayCode || splitDisplayCode(code).full);
         const peer = msg.peer as { device?: DeviceInfo } | null;
+        this.trustedReconnectTargetCode = null;
         this.pendingIntent = { action: "join", code };
         this.emit({
           roomCode: code,
@@ -655,6 +710,7 @@ export class DropBridgeEngine {
       case "peer-joined": {
         const device = msg.device as DeviceInfo;
         const role = (msg.role as "initiator" | "responder") || "initiator";
+        this.trustedReconnectTargetCode = null;
         this.emit({
           remotePeer: device,
           connectionState: "handshaking",
@@ -709,7 +765,18 @@ export class DropBridgeEngine {
       }
 
       case "error": {
+        const errCode = String(msg.code || "");
         const message = String(msg.message || "Could not connect to bridge.");
+        if (
+          this.trustedReconnectTargetCode &&
+          (errCode === "ROOM_NOT_FOUND" || message.toLowerCase().includes("not found"))
+        ) {
+          const target = this.trustedReconnectTargetCode;
+          this.trustedReconnectTargetCode = null;
+          this.createNewRoom(target);
+          return;
+        }
+        this.trustedReconnectTargetCode = null;
         this.emit({
           connectionState: "waiting",
           errorMessage: message,
@@ -717,6 +784,34 @@ export class DropBridgeEngine {
         break;
       }
     }
+  }
+
+  /**
+   * Gather local LAN host + STUN candidates before sending SDP in HTTP mode
+   * so the entire Offer/Answer travels atomically in 1 request.
+   */
+  private waitForIceGatheringComplete(pc: RTCPeerConnection, timeoutMs = 1200): Promise<void> {
+    if (pc.iceGatheringState === "complete") return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        pc.removeEventListener("icegatheringstatechange", onState);
+        pc.removeEventListener("icecandidate", onCand);
+        clearTimeout(timer);
+        resolve();
+      };
+      const onState = () => {
+        if (pc.iceGatheringState === "complete") done();
+      };
+      const onCand = (ev: RTCPeerConnectionIceEvent) => {
+        if (!ev.candidate) done();
+      };
+      const timer = setTimeout(done, timeoutMs);
+      pc.addEventListener("icegatheringstatechange", onState);
+      pc.addEventListener("icecandidate", onCand);
+    });
   }
 
   private setupWebRTC(isInitiator: boolean): void {
@@ -732,8 +827,9 @@ export class DropBridgeEngine {
       }
     }, WEBRTC_FALLBACK_TIMEOUT_MS);
 
+    // In WS mode, trickle ICE instantly. In HTTP mode, bundle all candidates atomically into SDP!
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
+      if (this.signalingMode === "ws" && event.candidate) {
         this.sendSignal({
           type: "signal",
           payload: { candidate: event.candidate.toJSON() },
@@ -756,7 +852,10 @@ export class DropBridgeEngine {
       this.attachDataChannel(dc);
       pc.createOffer()
         .then((offer) => pc.setLocalDescription(offer))
-        .then(() => {
+        .then(async () => {
+          if (this.signalingMode === "http") {
+            await this.waitForIceGatheringComplete(pc, 1200);
+          }
           if (pc.localDescription) {
             this.sendSignal({
               type: "signal",
@@ -774,6 +873,18 @@ export class DropBridgeEngine {
     }
   }
 
+  private async flushPendingIceCandidates(pc: RTCPeerConnection): Promise<void> {
+    if (this.pendingIceCandidates.length === 0) return;
+    const queued = this.pendingIceCandidates.splice(0, this.pendingIceCandidates.length);
+    for (const cand of queued) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(cand));
+      } catch {
+        // ignore stale/incompatible candidate
+      }
+    }
+  }
+
   private async handleRtcSignal(payload: {
     sdp?: RTCSessionDescriptionInit;
     candidate?: RTCIceCandidateInit;
@@ -787,9 +898,14 @@ export class DropBridgeEngine {
     try {
       if (payload.sdp) {
         await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+        await this.flushPendingIceCandidates(pc);
+
         if (payload.sdp.type === "offer") {
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
+          if (this.signalingMode === "http") {
+            await this.waitForIceGatheringComplete(pc, 1200);
+          }
           if (pc.localDescription) {
             this.sendSignal({
               type: "signal",
@@ -798,7 +914,11 @@ export class DropBridgeEngine {
           }
         }
       } else if (payload.candidate) {
-        await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+        if (!pc.remoteDescription || !pc.remoteDescription.type) {
+          this.pendingIceCandidates.push(payload.candidate);
+        } else {
+          await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+        }
       }
     } catch {
       // Ignore late ICE candidates; Tier 3 fallback guards reliability
@@ -815,6 +935,8 @@ export class DropBridgeEngine {
         clearTimeout(this.fallbackTimer);
         this.fallbackTimer = null;
       }
+      const wasAlreadyConnected = this.state.connectionState === "connected";
+      // Automatically promote from Relay (if active) straight to Direct P2P / LAN!
       this.useRelayFallback = false;
       this.emit({
         connectionState: "connected",
@@ -822,7 +944,12 @@ export class DropBridgeEngine {
         errorMessage: null,
       });
       this.detectTransportTier();
-      soundEngine.playConnected();
+      if (this.tierRecheckTimer) clearTimeout(this.tierRecheckTimer);
+      this.tierRecheckTimer = setTimeout(() => this.detectTransportTier(), 800);
+
+      if (!wasAlreadyConnected) {
+        soundEngine.playConnected();
+      }
       this.sendControl({ type: "bridge-hello", device: this.state.localDevice });
       this.requestPendingResumes();
       this.drainOutgoingQueue();
@@ -855,6 +982,7 @@ export class DropBridgeEngine {
 
   private activateRelayFallback(): void {
     if (this.useRelayFallback) return;
+    if (this.dc && this.dc.readyState === "open") return;
     if (this.signalingMode === "ws" && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) return;
 
     this.useRelayFallback = true;
@@ -908,9 +1036,14 @@ export class DropBridgeEngine {
   }
 
   private closePeerConnection(): void {
+    this.pendingIceCandidates = [];
     if (this.fallbackTimer) {
       clearTimeout(this.fallbackTimer);
       this.fallbackTimer = null;
+    }
+    if (this.tierRecheckTimer) {
+      clearTimeout(this.tierRecheckTimer);
+      this.tierRecheckTimer = null;
     }
     if (this.dc) {
       try {
@@ -939,6 +1072,16 @@ export class DropBridgeEngine {
     return false;
   }
 
+  private getOptimalChunkSize(): number {
+    if (this.dc && this.dc.readyState === "open") {
+      const maxMsg = this.pc?.sctp?.maxMessageSize || 0;
+      if (maxMsg >= FAST_CHUNK_SIZE + 1024) {
+        return FAST_CHUNK_SIZE;
+      }
+    }
+    return SAFE_CHUNK_SIZE;
+  }
+
   private sendControl(payload: Record<string, unknown>): void {
     if (this.dc && this.dc.readyState === "open") {
       this.dc.send(JSON.stringify(payload));
@@ -964,7 +1107,7 @@ export class DropBridgeEngine {
           setTimeout(() => {
             dc.removeEventListener("bufferedamountlow", onLow);
             resolve();
-          }, 500);
+          }, 400);
         });
       }
       if (this.dc && this.dc.readyState === "open") {
@@ -972,21 +1115,17 @@ export class DropBridgeEngine {
       }
     } else if (this.useRelayFallback) {
       if (this.signalingMode === "http") {
-        await fetch("/api/signal", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "relay-bin",
-            room: this.state.roomCode,
-            peerId: this.httpPeerId,
-            payload: arrayBufferToBase64(buffer),
-          }),
-        }).catch(() => {});
+        await this.enqueueHttpPost({
+          action: "relay-bin",
+          room: this.state.roomCode,
+          peerId: this.httpPeerId,
+          payload: arrayBufferToBase64(buffer),
+        });
         return;
       }
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         if (this.ws.bufferedAmount > BUFFER_HIGH_WATER) {
-          await new Promise((r) => setTimeout(r, 35));
+          await new Promise((r) => setTimeout(r, 25));
         }
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
           this.ws.send(buffer);
@@ -1050,9 +1189,8 @@ export class DropBridgeEngine {
             name,
             size,
             mimeType,
-            chunks: [],
+            chunksBySeq: new Map(),
             bytesReceived: 0,
-            crc: 0,
             startedAt: performance.now(),
             lastUiTick: 0,
           });
@@ -1084,21 +1222,31 @@ export class DropBridgeEngine {
         const buf = this.incomingBuffers.get(id);
         if (!buf) return;
 
-        const parts = buf.chunks.map((c) => {
-          const copy = new ArrayBuffer(c.byteLength);
-          new Uint8Array(copy).set(c);
-          return copy;
-        });
+        // Assemble chunks strictly in sequence order so out-of-order HTTP frames never corrupt files
+        const orderedSeqs = Array.from(buf.chunksBySeq.keys()).sort((a, b) => a - b);
+        const parts: ArrayBuffer[] = [];
+        let crc = 0;
+
+        for (const seq of orderedSeqs) {
+          const chunk = buf.chunksBySeq.get(seq)!;
+          crc = updateCrc32(crc, chunk);
+          const copy = new ArrayBuffer(chunk.byteLength);
+          new Uint8Array(copy).set(chunk);
+          parts.push(copy);
+        }
+
         const blob = new Blob(parts, { type: buf.mimeType });
         const blobUrl = URL.createObjectURL(blob);
-        const verified = expectedCrc === undefined ? true : buf.crc === expectedCrc;
+        const verified = expectedCrc === undefined ? true : crc === expectedCrc;
+        const elapsedSec = Math.max(0.015, (performance.now() - buf.startedAt) / 1000);
+        const finalSpeedBps = buf.size > 0 ? Math.round(buf.size / elapsedSec) : 0;
 
         this.incomingBuffers.delete(id);
         this.updateFileItem(id, {
           status: "completed",
           progress: 100,
           bytesTransferred: buf.size,
-          speedBps: 0,
+          speedBps: finalSpeedBps,
           etaSeconds: null,
           blob,
           blobUrl,
@@ -1145,18 +1293,17 @@ export class DropBridgeEngine {
     const buf = this.incomingBuffers.get(meta.id);
     if (!buf) return;
 
-    if (meta.offset < buf.bytesReceived) return;
+    if (buf.chunksBySeq.has(meta.seq)) return;
 
     const copy = new Uint8Array(payload.byteLength);
     copy.set(payload);
-    buf.chunks.push(copy);
+    buf.chunksBySeq.set(meta.seq, copy);
     buf.bytesReceived += copy.byteLength;
-    buf.crc = updateCrc32(buf.crc, copy);
 
     const now = performance.now();
     if (now - buf.lastUiTick >= 90 || buf.bytesReceived >= buf.size) {
       buf.lastUiTick = now;
-      const elapsedSec = Math.max(0.05, (now - buf.startedAt) / 1000);
+      const elapsedSec = Math.max(0.02, (now - buf.startedAt) / 1000);
       const speedBps = buf.bytesReceived / elapsedSec;
       const remaining = Math.max(0, buf.size - buf.bytesReceived);
       const etaSeconds = speedBps > 0 ? remaining / speedBps : null;
@@ -1208,8 +1355,6 @@ export class DropBridgeEngine {
 
     const startedAt = performance.now();
     let lastUiTick = 0;
-    let seq = 0;
-    let crc = 0;
 
     while (job.offset < file.size) {
       if (job.cancelled) {
@@ -1222,47 +1367,71 @@ export class DropBridgeEngine {
         return;
       }
 
-      const end = Math.min(job.offset + CHUNK_SIZE, file.size);
-      const sliceBuf = await file.slice(job.offset, end).arrayBuffer();
-      const bytes = new Uint8Array(sliceBuf);
-      crc = updateCrc32(crc, bytes);
+      const windowEnd = Math.min(job.offset + READ_WINDOW_SIZE, file.size);
+      const windowBuf = await file.slice(job.offset, windowEnd).arrayBuffer();
+      const windowBytes = new Uint8Array(windowBuf);
+      const chunkSize = this.getOptimalChunkSize();
 
-      const frame = encodeBinaryChunk({ id: itemId, seq, offset: job.offset }, bytes);
-      await this.sendBinary(frame);
+      let localPos = 0;
+      while (localPos < windowBytes.byteLength) {
+        if (job.cancelled) {
+          this.updateFileItem(itemId, { status: "cancelled", speedBps: 0, etaSeconds: null });
+          return;
+        }
+        if (!this.isTransportReady()) {
+          this.outgoingQueue.unshift(job);
+          return;
+        }
 
-      job.offset = end;
-      seq++;
+        const sliceLen = Math.min(chunkSize, windowBytes.byteLength - localPos);
+        const bytes = windowBytes.subarray(localPos, localPos + sliceLen);
+        job.crc = updateCrc32(job.crc, bytes);
 
-      const now = performance.now();
-      if (now - lastUiTick >= 90 || job.offset >= file.size) {
-        lastUiTick = now;
-        const elapsedSec = Math.max(0.05, (now - startedAt) / 1000);
-        const speedBps = job.offset / elapsedSec;
-        const remaining = Math.max(0, file.size - job.offset);
-        const etaSeconds = speedBps > 0 ? remaining / speedBps : null;
-        const progress = file.size > 0 ? Math.min(99, Math.round((job.offset / file.size) * 100)) : 100;
+        const frame = encodeBinaryChunk({ id: itemId, seq: job.seq, offset: job.offset }, bytes);
+        if (this.dc && this.dc.readyState === "open" && this.dc.bufferedAmount <= BUFFER_HIGH_WATER) {
+          this.dc.send(frame);
+        } else {
+          await this.sendBinary(frame);
+        }
 
-        this.updateFileItem(itemId, {
-          status: "transferring",
-          bytesTransferred: job.offset,
-          progress,
-          speedBps,
-          etaSeconds,
-        });
+        job.offset += sliceLen;
+        job.seq++;
+        localPos += sliceLen;
+
+        const now = performance.now();
+        if (now - lastUiTick >= 90 || job.offset >= file.size) {
+          lastUiTick = now;
+          const elapsedSec = Math.max(0.02, (now - startedAt) / 1000);
+          const speedBps = job.offset / elapsedSec;
+          const remaining = Math.max(0, file.size - job.offset);
+          const etaSeconds = speedBps > 0 ? remaining / speedBps : null;
+          const progress = file.size > 0 ? Math.min(99, Math.round((job.offset / file.size) * 100)) : 100;
+
+          this.updateFileItem(itemId, {
+            status: "transferring",
+            bytesTransferred: job.offset,
+            progress,
+            speedBps,
+            etaSeconds,
+          });
+        }
       }
     }
+
+    const totalElapsedSec = Math.max(0.015, (performance.now() - startedAt) / 1000);
+    const achievedSpeedBps = file.size > 0 ? Math.round(file.size / totalElapsedSec) : 0;
 
     this.sendControl({
       type: "file-complete",
       id: itemId,
-      crc,
+      crc: job.crc,
     });
 
     this.updateFileItem(itemId, {
       status: "completed",
       progress: 100,
       bytesTransferred: file.size,
-      speedBps: 0,
+      speedBps: achievedSpeedBps,
       etaSeconds: null,
       verified: true,
     });

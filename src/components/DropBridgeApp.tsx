@@ -18,16 +18,13 @@ import {
   setAutoRejoinEnabled,
 } from "@/lib/trustedDevices";
 import type { BridgeSnapshot, FileTransferItem, TrustedDevice } from "@/lib/types";
+import { usePwaInstall } from "@/lib/usePwaInstall";
 import { normalizeCode, saveDeviceName } from "@/lib/utils";
 import { DesktopSplitView } from "./DesktopSplitView";
 import { MediaPreviewModal } from "./MediaPreviewModal";
 import { MobilePocketView } from "./MobilePocketView";
+import { PwaInstallModal } from "./PwaInstallModal";
 import { SplashScreen } from "./SplashScreen";
-
-interface BeforeInstallPromptEvent extends Event {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
-}
 
 interface DirectoryPickerHandle {
   name: string;
@@ -47,8 +44,15 @@ export function DropBridgeApp() {
   const engineRef = useRef<DropBridgeEngine | null>(null);
   const sharedHandledRef = useRef(false);
   const dirHandleRef = useRef<DirectoryPickerHandle | null>(null);
-  const installPromptRef = useRef<BeforeInstallPromptEvent | null>(null);
   const loggedHistoryIdsRef = useRef<Set<string>>(new Set());
+
+  const {
+    isStandalone,
+    platform,
+    showGuideModal,
+    setShowGuideModal,
+    triggerInstall,
+  } = usePwaInstall();
 
   const [snapshot, setSnapshot] = useState<BridgeSnapshot>(() => {
     const engine = new DropBridgeEngine();
@@ -67,7 +71,6 @@ export function DropBridgeApp() {
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const [autoRejoin, setAutoRejoin] = useState(true);
   const [previewItem, setPreviewItem] = useState<FileTransferItem | null>(null);
-  const [canInstallPwa, setCanInstallPwa] = useState(false);
   const [canUseFolderAutoSave, setCanUseFolderAutoSave] = useState(false);
   const [autoSaveFolderName, setAutoSaveFolderName] = useState<string | null>(null);
   const [autoSavedIds, setAutoSavedIds] = useState<Set<string>>(() => new Set());
@@ -75,7 +78,7 @@ export function DropBridgeApp() {
   const joinParam = searchParams.get("join");
   const sharedParam = searchParams.get("shared");
 
-  // Register lightweight PWA service worker + listen for native PWA Install prompt
+  // Register lightweight PWA service worker + detect File System Access API
   useEffect(() => {
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
@@ -86,23 +89,6 @@ export function DropBridgeApp() {
         "showDirectoryPicker" in window &&
         window.isSecureContext
     );
-
-    const onBeforeInstall = (e: Event) => {
-      e.preventDefault();
-      installPromptRef.current = e as BeforeInstallPromptEvent;
-      setCanInstallPwa(true);
-    };
-    const onInstalled = () => {
-      installPromptRef.current = null;
-      setCanInstallPwa(false);
-    };
-
-    window.addEventListener("beforeinstallprompt", onBeforeInstall);
-    window.addEventListener("appinstalled", onInstalled);
-    return () => {
-      window.removeEventListener("beforeinstallprompt", onBeforeInstall);
-      window.removeEventListener("appinstalled", onInstalled);
-    };
   }, []);
 
   // Capture runtime origin, persistent history, trusted devices & LAN IP
@@ -332,7 +318,7 @@ export function DropBridgeApp() {
   };
 
   const handleReconnectTrusted = (device: TrustedDevice) => {
-    engineRef.current?.createNewRoom(device.roomCode);
+    engineRef.current?.reconnectTrustedRoom(device.roomCode);
   };
 
   const handleForgetTrusted = (deviceId: string) => {
@@ -345,15 +331,6 @@ export function DropBridgeApp() {
 
   const handleClearHistory = () => {
     setHistoryEntries(clearTransferHistory());
-  };
-
-  const handleInstallPwa = async () => {
-    const promptEvt = installPromptRef.current;
-    if (!promptEvt) return;
-    await promptEvt.prompt();
-    await promptEvt.userChoice.catch(() => {});
-    installPromptRef.current = null;
-    setCanInstallPwa(false);
   };
 
   const handlePickAutoSaveFolder = async () => {
@@ -376,6 +353,8 @@ export function DropBridgeApp() {
     dirHandleRef.current = null;
     setAutoSaveFolderName(null);
   };
+
+  const canInstallPwa = !isStandalone;
 
   return (
     <>
@@ -411,7 +390,7 @@ export function DropBridgeApp() {
           onForgetTrusted={handleForgetTrusted}
           onRemoveHistoryEntry={handleRemoveHistoryEntry}
           onClearHistory={handleClearHistory}
-          onInstallPwa={handleInstallPwa}
+          onInstallPwa={triggerInstall}
           onPickAutoSaveFolder={handlePickAutoSaveFolder}
           onDisableAutoSaveFolder={handleDisableAutoSaveFolder}
         />
@@ -425,6 +404,7 @@ export function DropBridgeApp() {
           historyEntries={historyEntries}
           autoRejoin={autoRejoin}
           canInstallPwa={canInstallPwa}
+          autoSavedIds={autoSavedIds}
           onFilesSelected={handleFilesSelected}
           onSendText={handleSendText}
           onJoinCode={handleJoinCode}
@@ -440,12 +420,19 @@ export function DropBridgeApp() {
           onForgetTrusted={handleForgetTrusted}
           onRemoveHistoryEntry={handleRemoveHistoryEntry}
           onClearHistory={handleClearHistory}
-          onInstallPwa={handleInstallPwa}
+          onInstallPwa={triggerInstall}
         />
       </div>
 
       {/* Full-Resolution Media Lightbox */}
       <MediaPreviewModal item={previewItem} onClose={() => setPreviewItem(null)} />
+
+      {/* Pure Cross-Platform PWA Install Guide Modal */}
+      <PwaInstallModal
+        open={showGuideModal}
+        platform={platform}
+        onClose={() => setShowGuideModal(false)}
+      />
     </>
   );
 }
